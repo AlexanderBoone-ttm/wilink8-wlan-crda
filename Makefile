@@ -28,15 +28,28 @@ RUNTIME_PUBKEY_DIR?=/etc/wireless-regdb/pubkeys
 CFLAGS += -O2 -fpic
 CFLAGS += -std=gnu99 -Wall -pedantic
 CFLAGS += -Wall -g
+
+LIBREG_SO := libreg.so
+LIBREG_STATIC := libreg.a
 LDLIBREG += -lreg
-LDLIBS += $(LDLIBREG)
-LDLIBS += -lm
-LIBREG += libreg.so
+
+ifeq ($(COMPILE_STATIC),1)
 LDFLAGS += -L ./
+LDFLAGS += -static
+LDLIBS := $(LDLIBREG)
+#LDLIBS := -L$(LIBREG_STATIC)
+LIBREG_DEP := $(LIBREG_STATIC)
+else
+LDFLAGS += -L ./
+LDLIBS := $(LDLIBREG)
+LIBREG_DEP := $(LIBREG_SO)
+endif
+
+LDLIBS += -lpthread -lm
 
 all: all_noverify verify
 
-all_noverify: $(LIBREG) crda intersect regdbdump db2rd optimize
+all_noverify: crda intersect regdbdump db2rd optimize
 
 ifeq ($(USE_OPENSSL),1)
 CFLAGS += -DUSE_OPENSSL -DPUBKEY_DIR=\"$(RUNTIME_PUBKEY_DIR)\" `pkg-config --cflags openssl`
@@ -114,9 +127,13 @@ keys-%.c: utils/key2pub.py $(wildcard $(PUBKEY_DIR)/*.pem)
 	$(NQ) '  Trusted pubkeys:' $(wildcard $(PUBKEY_DIR)/*.pem)
 	$(Q)./utils/key2pub.py --$* $(wildcard $(PUBKEY_DIR)/*.pem) $@
 
-$(LIBREG): reglib.c regdb.h reglib.h
+$(LIBREG_SO): reglib.c regdb.h reglib.h
 	$(NQ) '  CC  ' $@
-	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ -shared -Wl,-soname,$(LIBREG) $<
+	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ -shared -Wl,-soname,$(LIBREG_SO) $<
+
+$(LIBREG_STATIC): reglib.o regdb.h reglib.h
+	$(NQ) '  AR  ' $<
+	$(Q)$(AR) rcs $@ $<
 
 install-libreg-headers:
 	$(NQ) '  INSTALL  libreg-headers'
@@ -126,32 +143,32 @@ install-libreg-headers:
 install-libreg:
 	$(NQ) '  INSTALL  libreg'
 	$(Q)mkdir -p $(DESTDIR)/$(LIBDIR)
-	$(Q)cp $(LIBREG) $(DESTDIR)/$(LIBDIR)/
+	$(Q)cp $(LIBREG_SO) $(DESTDIR)/$(LIBDIR)/
 	#$(Q)ldconfig
 
-%.o: %.c regdb.h $(LIBREG)
+%.o: %.c regdb.h
 	$(NQ) '  CC  ' $@
 	$(Q)$(CC) -c $(CPPFLAGS) $(CFLAGS) -o $@ $<
 
-crda: crda.o
+crda: crda.o $(LIBREG_DEP)
 	$(NQ) '  LD  ' $@
-	$(Q)$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS) $(NLLIBS)
+	$(Q)$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(NLLIBS) $(LDLIBS)
 
-regdbdump: regdbdump.o
+regdbdump: regdbdump.o $(LIBREG_DEP)
 	$(NQ) '  LD  ' $@
-	$(Q)$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+	$(Q)$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS)
 
-intersect: intersect.o
+intersect: intersect.o $(LIBREG_DEP)
 	$(NQ) '  LD  ' $@
-	$(Q)$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+	$(Q)$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS)
 
-db2rd: db2rd.o
+db2rd: db2rd.o $(LIBREG_DEP)
 	$(NQ) '  LD  ' $@
-	$(Q)$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+	$(Q)$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS)
 
-optimize: optimize.o
+optimize: optimize.o $(LIBREG_DEP)
 	$(NQ) '  LD  ' $@
-	$(Q)$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+	$(Q)$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS)
 
 verify: $(REG_BIN) regdbdump
 	$(NQ) '  CHK  $(REG_BIN)'
@@ -163,7 +180,11 @@ verify: $(REG_BIN) regdbdump
 	@$(NQ) ' GZIP' $<
 	$(Q)gzip < $< > $@
 
-install: install-libreg install-libreg-headers crda crda.8.gz regdbdump.8.gz
+ifneq ($(COMPILE_STATIC),1)
+INSTALL_LIBREG := install-libreg install-libreg-headers
+endif
+
+install: $(INSTALL_LIBREG) crda crda.8.gz regdbdump.8.gz
 	$(NQ) '  INSTALL  crda'
 	$(Q)$(MKDIR) $(DESTDIR)/$(SBINDIR)
 	$(Q)$(INSTALL) -m 755 -t $(DESTDIR)/$(SBINDIR) crda
@@ -186,6 +207,6 @@ install: install-libreg install-libreg-headers crda crda.8.gz regdbdump.8.gz
 	$(Q)$(INSTALL) -m 644 -t $(DESTDIR)/$(MANDIR)/man8/ regdbdump.8.gz
 
 clean:
-	$(Q)rm -f $(LIBREG) crda regdbdump intersect db2rd optimize \
+	$(Q)rm -f $(LIBREG_SO) $(LIBREG_STATIC) $(LIBREG_STATIC) crda regdbdump intersect db2rd optimize \
 		*.o *~ *.pyc keys-*.c *.gz \
 	udev/$(UDEV_LEVEL)regulatory.rules udev/regulatory.rules.parsed
